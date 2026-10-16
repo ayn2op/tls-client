@@ -308,10 +308,12 @@ func buildHTTP3Transport(cfg *http3Config) (http.RoundTripper, error) {
 }
 
 func profileDefaultMaxResponseHeaderBytes(cfg *http3Config) int {
-	if cfg.http3PriorityParam > 0 {
-		return CHROME_MAX_FIELD_SECTION_SIZE
+	// Firefox profiles set HTTP/3 settings but no priority, and Firefox sends no SETTINGS_MAX_FIELD_SECTION_SIZE.
+	// A profile without HTTP/3 settings gets the Chrome defaults.
+	if len(cfg.http3Settings) > 0 && cfg.http3PriorityParam == 0 {
+		return -1
 	}
-	return -1
+	return CHROME_MAX_FIELD_SECTION_SIZE
 }
 
 func (rt *roundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
