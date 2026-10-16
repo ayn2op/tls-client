@@ -2,7 +2,10 @@ package tests
 
 import (
 	"io"
+	stdhttp "net/http"
+	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"testing"
 
 	"github.com/bogdanfinn/tls-client/profiles"
@@ -70,6 +73,17 @@ func TestClient_SkipExistingCookiesOnClientSetCookies(t *testing.T) {
 }
 
 func TestClient_SkipExistingCookiesOnSetCookiesResponse(t *testing.T) {
+	// The server sets the same cookies on every response, with the number of the response as their value.
+	cookieNames := []string{"a", "b", "c"}
+	responses := 0
+	server := httptest.NewServer(stdhttp.HandlerFunc(func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		responses++
+		for _, name := range cookieNames {
+			stdhttp.SetCookie(w, &stdhttp.Cookie{Name: name, Value: strconv.Itoa(responses), Path: "/", MaxAge: 60})
+		}
+	}))
+	defer server.Close()
+
 	jarOptions := []tls_client.CookieJarOption{
 		tls_client.WithSkipExisting(),
 	}
@@ -86,90 +100,54 @@ func TestClient_SkipExistingCookiesOnSetCookiesResponse(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	get := func() {
+		req, err := http.NewRequest(http.MethodGet, server.URL, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+
+		if _, err := io.ReadAll(resp.Body); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	u, err := url.Parse(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	urlString := "https://eu.kith.com/"
-	req, err := http.NewRequest(http.MethodGet, urlString, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	req.Header = http.Header{
-		"accept":          {"*/*"},
-		"accept-encoding": {"gzip"},
-		"accept-language": {"de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7"},
-		"user-agent":      {"Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"},
-		http.HeaderOrderKey: {
-			"accept",
-			"accept-encoding",
-			"accept-language",
-			"user-agent",
-		},
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	defer resp.Body.Close()
-
-	_, err = io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	u, _ := url.Parse(urlString)
-
+	get()
 	cookiesAfterFirstRequest := client.GetCookies(u)
+	assert.Equal(t, len(cookieNames), len(cookiesAfterFirstRequest))
 
-	assert.Equal(t, 7, len(cookiesAfterFirstRequest))
+	// The jar keeps the cookies from the first response, whether they are set again by the client or by the server.
+	assertFirstValues := func() {
+		t.Helper()
+		cookies := client.GetCookies(u)
+		assert.Equal(t, len(cookieNames), len(cookies))
+		for _, cookie := range cookies {
+			assert.Equal(t, "1", cookie.Value, cookie.Name)
+		}
+	}
+	assertFirstValues()
 
 	cookie3 := &http.Cookie{
 		Name:   cookiesAfterFirstRequest[0].Name,
-		Value:  cookiesAfterFirstRequest[0].Value,
+		Value:  "changed",
 		Domain: cookiesAfterFirstRequest[0].Domain,
 		MaxAge: cookiesAfterFirstRequest[0].MaxAge,
 	}
 	client.SetCookies(u, []*http.Cookie{cookie3})
+	assertFirstValues()
 
-	assert.Equal(t, 7, len(client.GetCookies(u)))
-
-	req, err = http.NewRequest(http.MethodGet, "https://eu.kith.com/", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	req.Header = http.Header{
-		"accept":          {"*/*"},
-		"accept-encoding": {"gzip"},
-		"accept-language": {"de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7"},
-		"user-agent":      {"Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"},
-		http.HeaderOrderKey: {
-			"accept",
-			"accept-encoding",
-			"accept-language",
-			"user-agent",
-		},
-	}
-
-	resp, err = client.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	defer resp.Body.Close()
-
-	_, err = io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	cookiesAfterSecondRequest := client.GetCookies(u)
-
-	assert.Equal(t, 7, len(cookiesAfterSecondRequest))
+	get()
+	assertFirstValues()
 }
 
 func TestClient_ExcludeExpiredCookiesFromRequest(t *testing.T) {
